@@ -6,7 +6,7 @@ import plotly.express as px
 from supabase import create_client, Client
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
@@ -173,6 +173,7 @@ def train_models(df):
         rf_pred = rf_model.predict(X_test)
         rf_mae = mean_absolute_error(y_test, rf_pred)
         rf_rmse = np.sqrt(mean_squared_error(y_test, rf_pred))
+        rf_r2 = r2_score(y_test, rf_pred)
         
         models['rf'][metric] = {
             'model': rf_model,
@@ -184,6 +185,7 @@ def train_models(df):
         performance['rf'][metric] = {
             'MAE': rf_mae,
             'RMSE': rf_rmse,
+            'R2': rf_r2,
             'train_size': len(X_train),
             'test_size': len(X_test)
         }
@@ -200,6 +202,7 @@ def train_models(df):
         xgb_pred = xgb_model.predict(X_test)
         xgb_mae = mean_absolute_error(y_test, xgb_pred)
         xgb_rmse = np.sqrt(mean_squared_error(y_test, xgb_pred))
+        xgb_r2 = r2_score(y_test, xgb_pred)
         
         models['xgb'][metric] = {
             'model': xgb_model,
@@ -211,6 +214,7 @@ def train_models(df):
         performance['xgb'][metric] = {
             'MAE': xgb_mae,
             'RMSE': xgb_rmse,
+            'R2': xgb_r2,
             'train_size': len(X_train),
             'test_size': len(X_test)
         }
@@ -245,6 +249,7 @@ def train_models(df):
         lstm_pred = scaler_y.inverse_transform(lstm_pred_scaled).flatten()
         lstm_mae = mean_absolute_error(y_test, lstm_pred)
         lstm_rmse = np.sqrt(mean_squared_error(y_test, lstm_pred))
+        lstm_r2 = r2_score(y_test, lstm_pred)
         
         models['lstm'][metric] = {
             'model': lstm_model,
@@ -256,6 +261,7 @@ def train_models(df):
         performance['lstm'][metric] = {
             'MAE': lstm_mae,
             'RMSE': lstm_rmse,
+            'R2': lstm_r2,
             'train_size': len(X_train),
             'test_size': len(X_test)
         }
@@ -671,6 +677,44 @@ def main():
         with col6:
             st.metric("PM10", f"{latest['pm10']:.1f} µg/m³")
         
+        st.subheader("Data Statistics")
+        
+        # Calculate statistics for air quality metrics
+        metrics_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+        stats_df = df[metrics_cols].describe().T
+        stats_df = stats_df.round(2)
+        stats_df.index = ['Temperature (°C)', 'Humidity (%)', 'CO2 (ppm)', 'CO (ppm)', 'PM2.5 (µg/m³)', 'PM10 (µg/m³)']
+        
+        st.dataframe(stats_df, use_container_width=True)
+        
+        st.subheader("Correlation Heatmap")
+        
+        # Calculate correlation matrix
+        corr_matrix = df[metrics_cols].corr()
+        
+        # Create heatmap
+        fig = go.Figure(data=go.Heatmap(
+            z=corr_matrix.values,
+            x=['Temperature', 'Humidity', 'CO2', 'CO', 'PM2.5', 'PM10'],
+            y=['Temperature', 'Humidity', 'CO2', 'CO', 'PM2.5', 'PM10'],
+            colorscale='RdBu',
+            zmid=0,
+            text=corr_matrix.values.round(2),
+            texttemplate='%{text}',
+            textfont={"size": 10},
+            colorbar=dict(title="Correlation")
+        ))
+        
+        fig.update_layout(
+            title='Correlation Matrix of Air Quality Metrics',
+            xaxis_title='',
+            yaxis_title='',
+            height=500,
+            width=700
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
         st.subheader("Latest 50 Records")
         display_df = df[['created_at', 'temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].tail(50)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -999,6 +1043,7 @@ def main():
         **Evaluation Metrics:**
         - **MAE (Mean Absolute Error)**: Average absolute difference between predicted and actual values (lower is better)
         - **RMSE (Root Mean Squared Error)**: Square root of average squared differences (lower is better, penalizes large errors more)
+        - **R² Score (Coefficient of Determination)**: Proportion of variance in the dependent variable predictable from independent variables (higher is better, 1.0 is perfect)
         """)
         
         # Create comprehensive performance comparison
@@ -1030,6 +1075,19 @@ def main():
             })
         rmse_df = pd.DataFrame(rmse_data)
         st.dataframe(rmse_df, use_container_width=True, hide_index=True)
+        
+        # R² Score Comparison Table
+        st.subheader("R² Score Comparison Across Models")
+        r2_data = []
+        for i, metric in enumerate(metrics_list):
+            r2_data.append({
+                'Metric': metrics_display[i],
+                'Random Forest': f"{performance['rf'][metric]['R2']:.4f}",
+                'XGBoost': f"{performance['xgb'][metric]['R2']:.4f}",
+                'LSTM': f"{performance['lstm'][metric]['R2']:.4f}"
+            })
+        r2_df = pd.DataFrame(r2_data)
+        st.dataframe(r2_df, use_container_width=True, hide_index=True)
         
         # Visual comparison
         st.subheader("Visual Performance Comparison")
@@ -1107,6 +1165,49 @@ def main():
             title='RMSE Comparison by Metric (Lower is Better)',
             xaxis_title='Metric',
             yaxis_title='Root Mean Squared Error',
+            barmode='group',
+            height=450,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # R² comparison chart
+        fig = go.Figure()
+        
+        rf_r2 = [performance['rf'][m]['R2'] for m in metrics_list]
+        xgb_r2 = [performance['xgb'][m]['R2'] for m in metrics_list]
+        lstm_r2 = [performance['lstm'][m]['R2'] for m in metrics_list]
+        
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=rf_r2,
+            name='Random Forest',
+            marker_color='salmon'
+        ))
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=xgb_r2,
+            name='XGBoost',
+            marker_color='lightgreen'
+        ))
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=lstm_r2,
+            name='LSTM',
+            marker_color='gold'
+        ))
+        
+        fig.update_layout(
+            title='R² Score Comparison by Metric (Higher is Better)',
+            xaxis_title='Metric',
+            yaxis_title='R² Score',
             barmode='group',
             height=450,
             legend=dict(
