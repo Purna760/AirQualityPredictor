@@ -187,6 +187,9 @@ def predict_future(models, df_features, hours_ahead=1):
     current_data = df_features.iloc[-1].copy()
     last_timestamp = current_data['created_at']
     
+    # Initialize predictions dictionary
+    step_predictions = {}
+    
     # Iteratively predict for each hour
     for step in range(1, hours_ahead + 1):
         # Calculate timestamp for this step
