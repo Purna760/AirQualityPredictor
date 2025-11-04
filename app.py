@@ -8,10 +8,17 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import warnings
 import os
+import xgboost as xgb
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
 warnings.filterwarnings('ignore')
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # Supabase Configuration
 # Try Streamlit secrets first, then environment variables
@@ -50,7 +57,7 @@ st.set_page_config(
 
 # Title
 st.title("🌍 Air Quality Prediction Dashboard")
-st.markdown("Predict future air quality metrics (PM2.5, PM10, CO2, CO, Temperature, Humidity) using machine learning models trained on historical data")
+st.markdown("Predict future air quality metrics (PM2.5, PM10, CO2, CO, Temperature, Humidity) using **Random Forest, XGBoost, and LSTM** models")
 
 # Initialize Supabase client
 @st.cache_resource
@@ -115,7 +122,7 @@ def create_time_features(df):
 # Train models for each metric
 @st.cache_resource
 def train_models(df):
-    """Train Random Forest models for each air quality metric"""
+    """Train Random Forest, XGBoost, and LSTM models for each air quality metric"""
     if df is None or len(df) < 10:
         return None
     
@@ -127,8 +134,8 @@ def train_models(df):
         return None
     
     metrics = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-    models = {}
-    performance = {}
+    models = {'rf': {}, 'xgb': {}, 'lstm': {}}
+    performance = {'rf': {}, 'xgb': {}, 'lstm': {}}
     
     # Base features (time features + all lag features)
     base_features = ['hour', 'day_of_week', 'day_of_month', 'month']
@@ -146,29 +153,109 @@ def train_models(df):
             X, y, test_size=0.2, random_state=42, shuffle=False
         )
         
-        # Train Random Forest model
-        model = RandomForestRegressor(
+        # Scale data for LSTM
+        scaler_X = MinMaxScaler()
+        scaler_y = MinMaxScaler()
+        
+        X_train_scaled = scaler_X.fit_transform(X_train)
+        X_test_scaled = scaler_X.transform(X_test)
+        y_train_scaled = scaler_y.fit_transform(y_train.values.reshape(-1, 1))
+        y_test_scaled = scaler_y.transform(y_test.values.reshape(-1, 1))
+        
+        # 1. Train Random Forest model
+        rf_model = RandomForestRegressor(
             n_estimators=100,
             max_depth=10,
             random_state=42,
             n_jobs=-1
         )
-        model.fit(X_train, y_train)
+        rf_model.fit(X_train, y_train)
+        rf_pred = rf_model.predict(X_test)
+        rf_mae = mean_absolute_error(y_test, rf_pred)
+        rf_rmse = np.sqrt(mean_squared_error(y_test, rf_pred))
         
-        # Evaluate
-        y_pred = model.predict(X_test)
-        mae = mean_absolute_error(y_test, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        
-        models[metric] = {
-            'model': model,
+        models['rf'][metric] = {
+            'model': rf_model,
             'features': features,
-            'scaler': None
+            'scaler_X': None,
+            'scaler_y': None
         }
         
-        performance[metric] = {
-            'MAE': mae,
-            'RMSE': rmse,
+        performance['rf'][metric] = {
+            'MAE': rf_mae,
+            'RMSE': rf_rmse,
+            'train_size': len(X_train),
+            'test_size': len(X_test)
+        }
+        
+        # 2. Train XGBoost model
+        xgb_model = xgb.XGBRegressor(
+            n_estimators=100,
+            max_depth=10,
+            learning_rate=0.1,
+            random_state=42,
+            n_jobs=-1
+        )
+        xgb_model.fit(X_train, y_train, verbose=False)
+        xgb_pred = xgb_model.predict(X_test)
+        xgb_mae = mean_absolute_error(y_test, xgb_pred)
+        xgb_rmse = np.sqrt(mean_squared_error(y_test, xgb_pred))
+        
+        models['xgb'][metric] = {
+            'model': xgb_model,
+            'features': features,
+            'scaler_X': None,
+            'scaler_y': None
+        }
+        
+        performance['xgb'][metric] = {
+            'MAE': xgb_mae,
+            'RMSE': xgb_rmse,
+            'train_size': len(X_train),
+            'test_size': len(X_test)
+        }
+        
+        # 3. Train LSTM model
+        # Reshape for LSTM (samples, timesteps, features)
+        X_train_lstm = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))
+        X_test_lstm = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))
+        
+        lstm_model = Sequential([
+            LSTM(50, activation='relu', return_sequences=True, input_shape=(1, X_train_scaled.shape[1])),
+            Dropout(0.2),
+            LSTM(50, activation='relu'),
+            Dropout(0.2),
+            Dense(1)
+        ])
+        
+        lstm_model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        
+        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+        
+        lstm_model.fit(
+            X_train_lstm, y_train_scaled,
+            epochs=50,
+            batch_size=32,
+            validation_split=0.2,
+            callbacks=[early_stop],
+            verbose=0
+        )
+        
+        lstm_pred_scaled = lstm_model.predict(X_test_lstm, verbose=0)
+        lstm_pred = scaler_y.inverse_transform(lstm_pred_scaled).flatten()
+        lstm_mae = mean_absolute_error(y_test, lstm_pred)
+        lstm_rmse = np.sqrt(mean_squared_error(y_test, lstm_pred))
+        
+        models['lstm'][metric] = {
+            'model': lstm_model,
+            'features': features,
+            'scaler_X': scaler_X,
+            'scaler_y': scaler_y
+        }
+        
+        performance['lstm'][metric] = {
+            'MAE': lstm_mae,
+            'RMSE': lstm_rmse,
             'train_size': len(X_train),
             'test_size': len(X_test)
         }
@@ -176,12 +263,13 @@ def train_models(df):
     return models, performance, df_features
 
 # Make predictions
-def predict_future(models, df_features, hours_ahead=1):
-    """Predict future values for all metrics using iterative multi-step forecasting"""
+def predict_future(models, df_features, hours_ahead=1, model_type='rf'):
+    """Predict future values for all metrics using iterative multi-step forecasting for a specific model"""
     if models is None or df_features is None:
         return None
     
     metrics = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+    model_dict = models[model_type]
     
     # Get the latest data point
     current_data = df_features.iloc[-1].copy()
@@ -206,9 +294,11 @@ def predict_future(models, df_features, hours_ahead=1):
         # Predict each metric for this step
         step_predictions = {}
         for metric in metrics:
-            model_data = models[metric]
+            model_data = model_dict[metric]
             model = model_data['model']
             features = model_data['features']
+            scaler_X = model_data['scaler_X']
+            scaler_y = model_data['scaler_y']
             
             # Prepare features for prediction
             X_pred = []
@@ -218,12 +308,19 @@ def predict_future(models, df_features, hours_ahead=1):
                 else:
                     X_pred.append(current_data[feature])
             
-            # Make prediction for this metric
-            pred_value = model.predict([X_pred])[0]
+            # Make prediction based on model type
+            if model_type == 'lstm':
+                X_pred_array = np.array(X_pred).reshape(1, -1)
+                X_pred_scaled = scaler_X.transform(X_pred_array)
+                X_pred_lstm = X_pred_scaled.reshape((1, 1, X_pred_scaled.shape[1]))
+                pred_scaled = model.predict(X_pred_lstm, verbose=0)
+                pred_value = scaler_y.inverse_transform(pred_scaled).flatten()[0]
+            else:
+                pred_value = model.predict([X_pred])[0]
+            
             step_predictions[metric] = pred_value
         
         # Roll forward: Update current_data with predictions for next iteration
-        # Update lag features based on predicted values
         for metric in metrics:
             # Capture old lag values before overwriting
             old_lag1 = current_data[f'{metric}_lag1']
@@ -250,6 +347,13 @@ def predict_future(models, df_features, hours_ahead=1):
     predictions = {metric: step_predictions[metric] for metric in metrics}
     predictions['timestamp'] = last_timestamp + timedelta(hours=hours_ahead)
     
+    return predictions
+
+def predict_all_models(models, df_features, hours_ahead=1):
+    """Get predictions from all three models"""
+    predictions = {}
+    for model_type in ['rf', 'xgb', 'lstm']:
+        predictions[model_type] = predict_future(models, df_features, hours_ahead, model_type)
     return predictions
 
 # Main app
@@ -320,80 +424,121 @@ def main():
     
     # Tab 2: Predictions
     with tab2:
-        st.header("🔮 Future Predictions")
+        st.header("🔮 Future Predictions - Model Comparison")
         
-        predictions = predict_future(models, df_features, hours_ahead=forecast_hours)
+        all_predictions = predict_all_models(models, df_features, hours_ahead=forecast_hours)
         
-        if predictions:
-            st.markdown(f"### Predicted values for **{predictions['timestamp'].strftime('%Y-%m-%d %H:%M')}** ({forecast_hours} hours ahead)")
+        if all_predictions:
+            timestamp = all_predictions['rf']['timestamp']
+            st.markdown(f"### Predicted values for **{timestamp.strftime('%Y-%m-%d %H:%M')}** ({forecast_hours} hours ahead)")
             
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric(
-                    "🌡️ Temperature",
-                    f"{predictions['temperature']:.1f}°C",
-                    delta=f"{predictions['temperature'] - latest['temperature']:.1f}°C"
-                )
-                st.metric(
-                    "💧 Humidity",
-                    f"{predictions['humidity']:.1f}%",
-                    delta=f"{predictions['humidity'] - latest['humidity']:.1f}%"
-                )
-            
-            with col2:
-                st.metric(
-                    "🏭 CO2",
-                    f"{predictions['co2']:.0f} ppm",
-                    delta=f"{predictions['co2'] - latest['co2']:.0f} ppm"
-                )
-                st.metric(
-                    "☠️ CO",
-                    f"{predictions['co']:.2f} ppm",
-                    delta=f"{predictions['co'] - latest['co']:.2f} ppm"
-                )
-            
-            with col3:
-                st.metric(
-                    "🌫️ PM2.5",
-                    f"{predictions['pm25']:.1f} µg/m³",
-                    delta=f"{predictions['pm25'] - latest['pm25']:.1f} µg/m³"
-                )
-                st.metric(
-                    "💨 PM10",
-                    f"{predictions['pm10']:.1f} µg/m³",
-                    delta=f"{predictions['pm10'] - latest['pm10']:.1f} µg/m³"
-                )
-            
-            # Prediction comparison chart
-            st.subheader("Current vs Predicted Values")
+            # Model comparison metrics
+            st.subheader("Predictions by Model")
             
             metrics_names = ['Temperature', 'Humidity', 'CO2', 'CO', 'PM2.5', 'PM10']
             metrics_keys = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
             
-            current_values = [latest[key] for key in metrics_keys]
-            predicted_values = [predictions[key] for key in metrics_keys]
+            # Create comparison dataframe
+            comparison_data = []
+            for i, (name, key) in enumerate(zip(metrics_names, metrics_keys)):
+                row = {
+                    'Metric': name,
+                    'Current': f"{latest[key]:.2f}",
+                    'Random Forest': f"{all_predictions['rf'][key]:.2f}",
+                    'XGBoost': f"{all_predictions['xgb'][key]:.2f}",
+                    'LSTM': f"{all_predictions['lstm'][key]:.2f}"
+                }
+                comparison_data.append(row)
+            
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+            
+            # Prediction comparison chart
+            st.subheader("Model Predictions Comparison")
+            
+            # Create subplots for each metric
+            for name, key in zip(metrics_names, metrics_keys):
+                fig = go.Figure()
+                
+                current_val = latest[key]
+                rf_val = all_predictions['rf'][key]
+                xgb_val = all_predictions['xgb'][key]
+                lstm_val = all_predictions['lstm'][key]
+                
+                fig.add_trace(go.Bar(
+                    x=['Current', 'Random Forest', 'XGBoost', 'LSTM'],
+                    y=[current_val, rf_val, xgb_val, lstm_val],
+                    marker_color=['lightblue', 'salmon', 'lightgreen', 'gold'],
+                    text=[f"{current_val:.2f}", f"{rf_val:.2f}", f"{xgb_val:.2f}", f"{lstm_val:.2f}"],
+                    textposition='auto'
+                ))
+                
+                fig.update_layout(
+                    title=f'{name} - Current vs Model Predictions',
+                    xaxis_title='',
+                    yaxis_title='Value',
+                    height=300,
+                    showlegend=False
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Overall comparison
+            st.subheader("All Metrics - Model Comparison")
             
             fig = go.Figure()
-            fig.add_trace(go.Bar(
+            
+            current_values = [latest[key] for key in metrics_keys]
+            rf_values = [all_predictions['rf'][key] for key in metrics_keys]
+            xgb_values = [all_predictions['xgb'][key] for key in metrics_keys]
+            lstm_values = [all_predictions['lstm'][key] for key in metrics_keys]
+            
+            fig.add_trace(go.Scatter(
                 x=metrics_names,
                 y=current_values,
+                mode='lines+markers',
                 name='Current',
-                marker_color='lightblue'
+                line=dict(color='blue', width=2),
+                marker=dict(size=10)
             ))
-            fig.add_trace(go.Bar(
+            fig.add_trace(go.Scatter(
                 x=metrics_names,
-                y=predicted_values,
-                name=f'Predicted ({forecast_hours}h)',
-                marker_color='salmon'
+                y=rf_values,
+                mode='lines+markers',
+                name='Random Forest',
+                line=dict(color='red', width=2),
+                marker=dict(size=10)
+            ))
+            fig.add_trace(go.Scatter(
+                x=metrics_names,
+                y=xgb_values,
+                mode='lines+markers',
+                name='XGBoost',
+                line=dict(color='green', width=2),
+                marker=dict(size=10)
+            ))
+            fig.add_trace(go.Scatter(
+                x=metrics_names,
+                y=lstm_values,
+                mode='lines+markers',
+                name='LSTM',
+                line=dict(color='orange', width=2),
+                marker=dict(size=10)
             ))
             
             fig.update_layout(
-                barmode='group',
-                title='Current vs Predicted Values',
+                title=f'All Models Prediction Comparison ({forecast_hours}h ahead)',
                 xaxis_title='Metrics',
-                yaxis_title='Value',
-                height=400
+                yaxis_title='Predicted Value',
+                height=500,
+                hovermode='x unified',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -480,64 +625,162 @@ def main():
     
     # Tab 4: Model Performance
     with tab4:
-        st.header("📉 Model Performance Metrics")
+        st.header("📉 Model Performance Comparison")
         
         st.markdown("""
-        The models are evaluated using:
+        **Three Models are compared:**
+        - **Random Forest**: Ensemble method using 100 decision trees
+        - **XGBoost**: Gradient boosting algorithm optimized for speed and performance
+        - **LSTM**: Deep learning recurrent neural network for time-series forecasting
+        
+        **Evaluation Metrics:**
         - **MAE (Mean Absolute Error)**: Average absolute difference between predicted and actual values (lower is better)
         - **RMSE (Root Mean Squared Error)**: Square root of average squared differences (lower is better, penalizes large errors more)
         """)
         
-        # Create performance dataframe
-        perf_data = []
-        for metric, perf in performance.items():
-            perf_data.append({
-                'Metric': metric.upper().replace('_', ' '),
-                'MAE': f"{perf['MAE']:.3f}",
-                'RMSE': f"{perf['RMSE']:.3f}",
-                'Training Samples': perf['train_size'],
-                'Test Samples': perf['test_size']
+        # Create comprehensive performance comparison
+        metrics_list = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+        metrics_display = ['Temperature', 'Humidity', 'CO2', 'CO', 'PM2.5', 'PM10']
+        
+        # MAE Comparison Table
+        st.subheader("MAE Comparison Across Models")
+        mae_data = []
+        for i, metric in enumerate(metrics_list):
+            mae_data.append({
+                'Metric': metrics_display[i],
+                'Random Forest': f"{performance['rf'][metric]['MAE']:.3f}",
+                'XGBoost': f"{performance['xgb'][metric]['MAE']:.3f}",
+                'LSTM': f"{performance['lstm'][metric]['MAE']:.3f}"
+            })
+        mae_df = pd.DataFrame(mae_data)
+        st.dataframe(mae_df, use_container_width=True, hide_index=True)
+        
+        # RMSE Comparison Table
+        st.subheader("RMSE Comparison Across Models")
+        rmse_data = []
+        for i, metric in enumerate(metrics_list):
+            rmse_data.append({
+                'Metric': metrics_display[i],
+                'Random Forest': f"{performance['rf'][metric]['RMSE']:.3f}",
+                'XGBoost': f"{performance['xgb'][metric]['RMSE']:.3f}",
+                'LSTM': f"{performance['lstm'][metric]['RMSE']:.3f}"
+            })
+        rmse_df = pd.DataFrame(rmse_data)
+        st.dataframe(rmse_df, use_container_width=True, hide_index=True)
+        
+        # Visual comparison
+        st.subheader("Visual Performance Comparison")
+        
+        # MAE comparison chart
+        fig = go.Figure()
+        
+        rf_mae = [performance['rf'][m]['MAE'] for m in metrics_list]
+        xgb_mae = [performance['xgb'][m]['MAE'] for m in metrics_list]
+        lstm_mae = [performance['lstm'][m]['MAE'] for m in metrics_list]
+        
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=rf_mae,
+            name='Random Forest',
+            marker_color='salmon'
+        ))
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=xgb_mae,
+            name='XGBoost',
+            marker_color='lightgreen'
+        ))
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=lstm_mae,
+            name='LSTM',
+            marker_color='gold'
+        ))
+        
+        fig.update_layout(
+            title='MAE Comparison by Metric (Lower is Better)',
+            xaxis_title='Metric',
+            yaxis_title='Mean Absolute Error',
+            barmode='group',
+            height=450,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # RMSE comparison chart
+        fig = go.Figure()
+        
+        rf_rmse = [performance['rf'][m]['RMSE'] for m in metrics_list]
+        xgb_rmse = [performance['xgb'][m]['RMSE'] for m in metrics_list]
+        lstm_rmse = [performance['lstm'][m]['RMSE'] for m in metrics_list]
+        
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=rf_rmse,
+            name='Random Forest',
+            marker_color='salmon'
+        ))
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=xgb_rmse,
+            name='XGBoost',
+            marker_color='lightgreen'
+        ))
+        fig.add_trace(go.Bar(
+            x=metrics_display,
+            y=lstm_rmse,
+            name='LSTM',
+            marker_color='gold'
+        ))
+        
+        fig.update_layout(
+            title='RMSE Comparison by Metric (Lower is Better)',
+            xaxis_title='Metric',
+            yaxis_title='Root Mean Squared Error',
+            barmode='group',
+            height=450,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Best model per metric
+        st.subheader("Best Performing Model by Metric")
+        best_model_data = []
+        for i, metric in enumerate(metrics_list):
+            rf_mae_val = performance['rf'][metric]['MAE']
+            xgb_mae_val = performance['xgb'][metric]['MAE']
+            lstm_mae_val = performance['lstm'][metric]['MAE']
+            
+            best_mae = min(rf_mae_val, xgb_mae_val, lstm_mae_val)
+            if best_mae == rf_mae_val:
+                best_model = 'Random Forest'
+            elif best_mae == xgb_mae_val:
+                best_model = 'XGBoost'
+            else:
+                best_model = 'LSTM'
+            
+            best_model_data.append({
+                'Metric': metrics_display[i],
+                'Best Model (by MAE)': best_model,
+                'MAE': f"{best_mae:.3f}"
             })
         
-        perf_df = pd.DataFrame(perf_data)
-        st.dataframe(perf_df, use_container_width=True, hide_index=True)
-        
-        # Visualize performance
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=[p['Metric'] for p in perf_data],
-                y=[performance[m]['MAE'] for m in performance.keys()],
-                marker_color='lightcoral',
-                name='MAE'
-            ))
-            fig.update_layout(
-                title='Mean Absolute Error by Metric',
-                xaxis_title='Metric',
-                yaxis_title='MAE',
-                height=400
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=[p['Metric'] for p in perf_data],
-                y=[performance[m]['RMSE'] for m in performance.keys()],
-                marker_color='lightblue',
-                name='RMSE'
-            ))
-            fig.update_layout(
-                title='Root Mean Squared Error by Metric',
-                xaxis_title='Metric',
-                yaxis_title='RMSE',
-                height=400
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        st.info("💡 **Model Details**: Random Forest Regressors with 100 trees, trained on time-based features and lagged values")
+        best_df = pd.DataFrame(best_model_data)
+        st.dataframe(best_df, use_container_width=True, hide_index=True)
 
 if __name__ == "__main__":
     main()
