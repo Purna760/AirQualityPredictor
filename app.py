@@ -453,24 +453,10 @@ def predict_all_models(models, df_features, hours_ahead=1):
     return predictions
 
 def create_hourly_prediction_plot(df, hourly_predictions, metric, metric_name, model_type='rf'):
-    """Create a plot showing historical data + hourly predictions similar to the example image"""
-    
-    # Get historical data (last 48 hours for context)
-    historical_hours = 48
-    df_recent = df.tail(historical_hours).copy()
+    """Create a plot showing hourly predictions similar to the example image"""
     
     # Create figure with dark background
     fig = go.Figure()
-    
-    # Add historical data trace (blue line)
-    fig.add_trace(go.Scatter(
-        x=df_recent['created_at'],
-        y=df_recent[metric],
-        mode='lines',
-        name='Historical Data',
-        line=dict(color='#4A90E2', width=3),
-        hovertemplate='%{x|%b %d, %H:%M}<br>Value: %{y:.2f}<extra></extra>'
-    ))
     
     # Add hourly predictions if available
     if hourly_predictions and model_type in hourly_predictions:
@@ -555,24 +541,10 @@ def create_hourly_prediction_plot(df, hourly_predictions, metric, metric_name, m
     return fig
 
 def create_all_models_prediction_plot(df, hourly_predictions, metric, metric_name):
-    """Create a plot showing historical data + predictions from all three models"""
-    
-    # Get historical data (last 48 hours for context)
-    historical_hours = 48
-    df_recent = df.tail(historical_hours).copy()
+    """Create a plot showing predictions from all three models"""
     
     # Create figure with dark background
     fig = go.Figure()
-    
-    # Add historical data trace (blue line)
-    fig.add_trace(go.Scatter(
-        x=df_recent['created_at'],
-        y=df_recent[metric],
-        mode='lines',
-        name='Historical Data',
-        line=dict(color='#4A90E2', width=3),
-        hovertemplate='%{x|%b %d, %H:%M}<br>Value: %{y:.2f}<extra></extra>'
-    ))
     
     # Model colors
     model_colors = {
