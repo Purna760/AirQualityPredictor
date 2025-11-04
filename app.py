@@ -349,12 +349,210 @@ def predict_future(models, df_features, hours_ahead=1, model_type='rf'):
     
     return predictions
 
+def predict_hourly(models, df_features, hours_ahead=24, model_type='rf'):
+    """Predict future values for all metrics hour by hour, returning predictions for EACH hour"""
+    if models is None or df_features is None:
+        return None
+    
+    metrics = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+    model_dict = models[model_type]
+    
+    # Get the latest data point
+    current_data = df_features.iloc[-1].copy()
+    last_timestamp = current_data['created_at']
+    
+    # Initialize results storage for all hourly predictions
+    hourly_predictions = {metric: [] for metric in metrics}
+    hourly_timestamps = []
+    
+    # Iteratively predict for each hour
+    for step in range(1, hours_ahead + 1):
+        # Calculate timestamp for this step
+        step_timestamp = last_timestamp + timedelta(hours=step)
+        hourly_timestamps.append(step_timestamp)
+        
+        # Update time features for this step
+        time_features = {
+            'hour': step_timestamp.hour,
+            'day_of_week': step_timestamp.dayofweek,
+            'day_of_month': step_timestamp.day,
+            'month': step_timestamp.month
+        }
+        
+        # Predict each metric for this step
+        step_predictions = {}
+        for metric in metrics:
+            model_data = model_dict[metric]
+            model = model_data['model']
+            features = model_data['features']
+            scaler_X = model_data['scaler_X']
+            scaler_y = model_data['scaler_y']
+            
+            # Prepare features for prediction
+            X_pred = []
+            for feature in features:
+                if feature in time_features:
+                    X_pred.append(time_features[feature])
+                else:
+                    X_pred.append(current_data[feature])
+            
+            # Make prediction based on model type
+            if model_type == 'lstm':
+                X_pred_array = np.array(X_pred).reshape(1, -1)
+                X_pred_scaled = scaler_X.transform(X_pred_array)
+                X_pred_lstm = X_pred_scaled.reshape((1, 1, X_pred_scaled.shape[1]))
+                pred_scaled = model.predict(X_pred_lstm, verbose=0)
+                pred_value = scaler_y.inverse_transform(pred_scaled).flatten()[0]
+            else:
+                pred_value = model.predict([X_pred])[0]
+            
+            step_predictions[metric] = pred_value
+            hourly_predictions[metric].append(pred_value)
+        
+        # Roll forward: Update current_data with predictions for next iteration
+        for metric in metrics:
+            # Capture old lag values before overwriting
+            old_lag1 = current_data[f'{metric}_lag1']
+            old_lag2 = current_data[f'{metric}_lag2']
+            
+            # Shift lag values
+            current_data[f'{metric}_lag3'] = current_data[f'{metric}_lag2']
+            current_data[f'{metric}_lag2'] = old_lag1
+            current_data[f'{metric}_lag1'] = step_predictions[metric]
+            
+            # Update rolling statistics using distinct recent values
+            recent_values = [
+                step_predictions[metric],
+                old_lag1,
+                old_lag2
+            ]
+            current_data[f'{metric}_rolling_mean_3'] = np.mean(recent_values)
+            current_data[f'{metric}_rolling_std_3'] = np.std(recent_values)
+        
+        # Update timestamp
+        current_data['created_at'] = step_timestamp
+    
+    # Return all hourly predictions
+    return {
+        'timestamps': hourly_timestamps,
+        'predictions': hourly_predictions
+    }
+
+def predict_all_models_hourly(models, df_features, hours_ahead=24):
+    """Get hourly predictions from all three models"""
+    predictions = {}
+    for model_type in ['rf', 'xgb', 'lstm']:
+        predictions[model_type] = predict_hourly(models, df_features, hours_ahead, model_type)
+    return predictions
+
 def predict_all_models(models, df_features, hours_ahead=1):
     """Get predictions from all three models"""
     predictions = {}
     for model_type in ['rf', 'xgb', 'lstm']:
         predictions[model_type] = predict_future(models, df_features, hours_ahead, model_type)
     return predictions
+
+def create_hourly_prediction_plot(df, hourly_predictions, metric, metric_name, model_type='rf'):
+    """Create a plot showing historical data + hourly predictions similar to the example image"""
+    
+    # Get historical data (last 48 hours for context)
+    historical_hours = 48
+    df_recent = df.tail(historical_hours).copy()
+    
+    # Create figure with dark background
+    fig = go.Figure()
+    
+    # Add historical data trace (blue line)
+    fig.add_trace(go.Scatter(
+        x=df_recent['created_at'],
+        y=df_recent[metric],
+        mode='lines',
+        name='Historical Data',
+        line=dict(color='#4A90E2', width=3),
+        hovertemplate='%{x|%b %d, %H:%M}<br>Value: %{y:.2f}<extra></extra>'
+    ))
+    
+    # Add hourly predictions if available
+    if hourly_predictions and model_type in hourly_predictions:
+        pred_data = hourly_predictions[model_type]
+        if pred_data:
+            timestamps = pred_data['timestamps']
+            predictions = pred_data['predictions'][metric]
+            
+            # Split predictions into segments for different colors
+            # First third - green (near term)
+            # Middle third - yellow (medium term)
+            # Last third - red (long term)
+            total_hours = len(timestamps)
+            third = total_hours // 3
+            
+            # Near term predictions (green)
+            if third > 0:
+                fig.add_trace(go.Scatter(
+                    x=timestamps[:third],
+                    y=predictions[:third],
+                    mode='lines+markers',
+                    name='Near-term Forecast',
+                    line=dict(color='#50C878', width=2, dash='dot'),
+                    marker=dict(size=6, color='#50C878'),
+                    hovertemplate='%{x|%b %d, %H:%M}<br>Predicted: %{y:.2f}<extra></extra>'
+                ))
+            
+            # Medium term predictions (yellow)
+            if total_hours > third:
+                fig.add_trace(go.Scatter(
+                    x=timestamps[third:2*third],
+                    y=predictions[third:2*third],
+                    mode='lines+markers',
+                    name='Medium-term Forecast',
+                    line=dict(color='#FFD700', width=2, dash='dot'),
+                    marker=dict(size=6, color='#FFD700'),
+                    hovertemplate='%{x|%b %d, %H:%M}<br>Predicted: %{y:.2f}<extra></extra>'
+                ))
+            
+            # Long term predictions (red/orange)
+            if total_hours > 2*third:
+                fig.add_trace(go.Scatter(
+                    x=timestamps[2*third:],
+                    y=predictions[2*third:],
+                    mode='lines+markers',
+                    name='Long-term Forecast',
+                    line=dict(color='#FF6B6B', width=2, dash='dot'),
+                    marker=dict(size=6, color='#FF6B6B'),
+                    hovertemplate='%{x|%b %d, %H:%M}<br>Predicted: %{y:.2f}<extra></extra>'
+                ))
+    
+    # Update layout with dark theme similar to the example
+    fig.update_layout(
+        title=f'Prediction Analysis for {metric_name}',
+        xaxis_title='',
+        yaxis_title=f'{metric_name}',
+        template='plotly_dark',
+        height=400,
+        hovermode='x unified',
+        plot_bgcolor='#1E1E1E',
+        paper_bgcolor='#1E1E1E',
+        font=dict(color='white'),
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='#333333',
+            tickformat='%b %d, %Y<br>%H:%M'
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='#333333'
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            bgcolor='rgba(0,0,0,0.5)'
+        )
+    )
+    
+    return fig
 
 # Main app
 def main():
@@ -395,7 +593,7 @@ def main():
     st.sidebar.success("✅ Models trained successfully")
     
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Overview", "🔮 Predictions", "📈 Historical Trends", "📉 Model Performance"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Overview", "🔮 Predictions", "⏰ Hourly Predictions", "📈 Historical Trends", "📉 Model Performance"])
     
     # Tab 1: Data Overview
     with tab1:
@@ -543,8 +741,89 @@ def main():
             
             st.plotly_chart(fig, use_container_width=True)
     
-    # Tab 3: Historical Trends
+    # Tab 3: Hourly Predictions
     with tab3:
+        st.header("⏰ Hourly Predictions Analysis")
+        
+        st.markdown("""
+        This section shows hour-by-hour predictions for all air quality parameters.
+        The graphs display historical data (blue) followed by future hourly predictions:
+        - **Green**: Near-term forecasts
+        - **Yellow**: Medium-term forecasts
+        - **Red**: Long-term forecasts
+        """)
+        
+        # Settings for hourly predictions
+        col1, col2 = st.columns(2)
+        with col1:
+            hourly_forecast_hours = st.selectbox(
+                "Select Forecast Duration",
+                options=[6, 12, 18, 24],
+                index=1,
+                help="Number of hours to predict into the future"
+            )
+        
+        with col2:
+            selected_model = st.selectbox(
+                "Select Model",
+                options=[
+                    ('Random Forest', 'rf'),
+                    ('XGBoost', 'xgb'),
+                    ('LSTM', 'lstm')
+                ],
+                format_func=lambda x: x[0],
+                help="Choose which model to use for predictions"
+            )
+        
+        model_name, model_key = selected_model
+        
+        # Generate hourly predictions
+        with st.spinner(f"Generating {hourly_forecast_hours}-hour predictions using {model_name}..."):
+            hourly_predictions = predict_all_models_hourly(models, df_features, hours_ahead=hourly_forecast_hours)
+        
+        if hourly_predictions:
+            st.success(f"✅ Generated predictions for the next {hourly_forecast_hours} hours")
+            
+            # Define all metrics
+            all_metrics = [
+                ('PM10', 'pm10'),
+                ('PM2.5', 'pm25'),
+                ('CO2', 'co2'),
+                ('CO', 'co'),
+                ('Temperature', 'temperature'),
+                ('Humidity', 'humidity')
+            ]
+            
+            # Create plots for each metric
+            for metric_name, metric_key in all_metrics:
+                fig = create_hourly_prediction_plot(
+                    df, 
+                    hourly_predictions, 
+                    metric_key, 
+                    metric_name, 
+                    model_type=model_key
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Show prediction data table
+            with st.expander("📋 View Detailed Hourly Predictions"):
+                if model_key in hourly_predictions and hourly_predictions[model_key]:
+                    pred_data = hourly_predictions[model_key]
+                    timestamps = pred_data['timestamps']
+                    predictions = pred_data['predictions']
+                    
+                    # Create dataframe
+                    table_data = {'Timestamp': timestamps}
+                    for metric_name, metric_key in all_metrics:
+                        table_data[metric_name] = [f"{val:.2f}" for val in predictions[metric_key]]
+                    
+                    pred_df = pd.DataFrame(table_data)
+                    st.dataframe(pred_df, use_container_width=True, hide_index=True)
+        else:
+            st.error("Unable to generate hourly predictions")
+    
+    # Tab 4: Historical Trends
+    with tab4:
         st.header("📈 Historical Data Visualization")
         
         metric_select = st.selectbox(
@@ -623,8 +902,8 @@ def main():
         
         st.plotly_chart(fig, use_container_width=True)
     
-    # Tab 4: Model Performance
-    with tab4:
+    # Tab 5: Model Performance
+    with tab5:
         st.header("📉 Model Performance Comparison")
         
         st.markdown("""
