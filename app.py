@@ -554,6 +554,89 @@ def create_hourly_prediction_plot(df, hourly_predictions, metric, metric_name, m
     
     return fig
 
+def create_all_models_prediction_plot(df, hourly_predictions, metric, metric_name):
+    """Create a plot showing historical data + predictions from all three models"""
+    
+    # Get historical data (last 48 hours for context)
+    historical_hours = 48
+    df_recent = df.tail(historical_hours).copy()
+    
+    # Create figure with dark background
+    fig = go.Figure()
+    
+    # Add historical data trace (blue line)
+    fig.add_trace(go.Scatter(
+        x=df_recent['created_at'],
+        y=df_recent[metric],
+        mode='lines',
+        name='Historical Data',
+        line=dict(color='#4A90E2', width=3),
+        hovertemplate='%{x|%b %d, %H:%M}<br>Value: %{y:.2f}<extra></extra>'
+    ))
+    
+    # Model colors
+    model_colors = {
+        'rf': '#50C878',
+        'xgb': '#FFD700', 
+        'lstm': '#FF6B6B'
+    }
+    
+    model_names = {
+        'rf': 'Random Forest',
+        'xgb': 'XGBoost',
+        'lstm': 'LSTM'
+    }
+    
+    # Add predictions from each model
+    for model_type in ['rf', 'xgb', 'lstm']:
+        if hourly_predictions and model_type in hourly_predictions:
+            pred_data = hourly_predictions[model_type]
+            if pred_data:
+                timestamps = pred_data['timestamps']
+                predictions = pred_data['predictions'][metric]
+                
+                fig.add_trace(go.Scatter(
+                    x=timestamps,
+                    y=predictions,
+                    mode='lines+markers',
+                    name=model_names[model_type],
+                    line=dict(color=model_colors[model_type], width=2, dash='dot'),
+                    marker=dict(size=5, color=model_colors[model_type]),
+                    hovertemplate='%{x|%b %d, %H:%M}<br>' + model_names[model_type] + ': %{y:.2f}<extra></extra>'
+                ))
+    
+    # Update layout with dark theme
+    fig.update_layout(
+        title=f'Prediction Analysis for {metric_name} - All Models Comparison',
+        xaxis_title='',
+        yaxis_title=f'{metric_name}',
+        template='plotly_dark',
+        height=400,
+        hovermode='x unified',
+        plot_bgcolor='#1E1E1E',
+        paper_bgcolor='#1E1E1E',
+        font=dict(color='white'),
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='#333333',
+            tickformat='%b %d, %Y<br>%H:%M'
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='#333333'
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            bgcolor='rgba(0,0,0,0.5)'
+        )
+    )
+    
+    return fig
+
 # Main app
 def main():
     # Sidebar
@@ -747,10 +830,6 @@ def main():
         
         st.markdown("""
         This section shows hour-by-hour predictions for all air quality parameters.
-        The graphs display historical data (blue) followed by future hourly predictions:
-        - **Green**: Near-term forecasts
-        - **Yellow**: Medium-term forecasts
-        - **Red**: Long-term forecasts
         """)
         
         # Settings for hourly predictions
@@ -767,6 +846,7 @@ def main():
             selected_model = st.selectbox(
                 "Select Model",
                 options=[
+                    ('All Models', 'all'),
                     ('Random Forest', 'rf'),
                     ('XGBoost', 'xgb'),
                     ('LSTM', 'lstm')
@@ -795,30 +875,62 @@ def main():
             ]
             
             # Create plots for each metric
-            for metric_name, metric_key in all_metrics:
-                fig = create_hourly_prediction_plot(
-                    df, 
-                    hourly_predictions, 
-                    metric_key, 
-                    metric_name, 
-                    model_type=model_key
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            if model_key == 'all':
+                # Show all models on same graph
+                for metric_name, metric_key_val in all_metrics:
+                    fig = create_all_models_prediction_plot(
+                        df, 
+                        hourly_predictions, 
+                        metric_key_val, 
+                        metric_name
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                # Show single model predictions
+                for metric_name, metric_key_val in all_metrics:
+                    fig = create_hourly_prediction_plot(
+                        df, 
+                        hourly_predictions, 
+                        metric_key_val, 
+                        metric_name, 
+                        model_type=model_key
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
             
             # Show prediction data table
             with st.expander("📋 View Detailed Hourly Predictions"):
-                if model_key in hourly_predictions and hourly_predictions[model_key]:
-                    pred_data = hourly_predictions[model_key]
-                    timestamps = pred_data['timestamps']
-                    predictions = pred_data['predictions']
-                    
-                    # Create dataframe
-                    table_data = {'Timestamp': timestamps}
-                    for metric_name, metric_key in all_metrics:
-                        table_data[metric_name] = [f"{val:.2f}" for val in predictions[metric_key]]
-                    
-                    pred_df = pd.DataFrame(table_data)
-                    st.dataframe(pred_df, use_container_width=True, hide_index=True)
+                if model_key == 'all':
+                    # Show all models in table
+                    for model_type in ['rf', 'xgb', 'lstm']:
+                        model_display_names = {'rf': 'Random Forest', 'xgb': 'XGBoost', 'lstm': 'LSTM'}
+                        st.subheader(f"{model_display_names[model_type]} Predictions")
+                        
+                        if model_type in hourly_predictions and hourly_predictions[model_type]:
+                            pred_data = hourly_predictions[model_type]
+                            timestamps = pred_data['timestamps']
+                            predictions = pred_data['predictions']
+                            
+                            # Create dataframe
+                            table_data = {'Timestamp': timestamps}
+                            for metric_name, metric_key_val in all_metrics:
+                                table_data[metric_name] = [f"{val:.2f}" for val in predictions[metric_key_val]]
+                            
+                            pred_df = pd.DataFrame(table_data)
+                            st.dataframe(pred_df, use_container_width=True, hide_index=True)
+                else:
+                    # Show single model
+                    if model_key in hourly_predictions and hourly_predictions[model_key]:
+                        pred_data = hourly_predictions[model_key]
+                        timestamps = pred_data['timestamps']
+                        predictions = pred_data['predictions']
+                        
+                        # Create dataframe
+                        table_data = {'Timestamp': timestamps}
+                        for metric_name, metric_key_val in all_metrics:
+                            table_data[metric_name] = [f"{val:.2f}" for val in predictions[metric_key_val]]
+                        
+                        pred_df = pd.DataFrame(table_data)
+                        st.dataframe(pred_df, use_container_width=True, hide_index=True)
         else:
             st.error("Unable to generate hourly predictions")
     
