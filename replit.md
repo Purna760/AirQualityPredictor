@@ -2,7 +2,15 @@
 
 ## Overview
 
-This is a Streamlit-based web application for air quality prediction and analysis. The application uses machine learning models (Random Forest and Linear Regression) to forecast air quality metrics and visualizes the results using interactive Plotly charts. It integrates with Supabase as a backend database for storing and retrieving air quality data.
+This is a Streamlit-based web application for air quality prediction and analysis. The application uses **three advanced machine learning models** (Random Forest, XGBoost, and LSTM) to forecast six air quality metrics (PM2.5, PM10, CO2, CO, Temperature, Humidity). It provides comprehensive model comparison visualizations using interactive Plotly charts and integrates with Supabase as a backend database for storing and retrieving air quality data.
+
+## Recent Changes (November 2025)
+
+- Added **XGBoost** and **LSTM** models for enhanced prediction accuracy
+- Implemented multi-model comparison framework
+- Added comprehensive model performance comparison visualizations
+- Enhanced prediction interface to show results from all three models side-by-side
+- Improved time-series forecasting with iterative multi-step prediction
 
 ## User Preferences
 
@@ -19,9 +27,12 @@ Preferred communication style: Simple, everyday language.
 - **Application Server**: Streamlit's built-in server handles HTTP requests and manages user sessions
 - **Machine Learning Models**: 
   - Random Forest Regressor - ensemble method for robust predictions with non-linear patterns
-  - Linear Regression - baseline model for comparison and simpler linear trend analysis
-  - scikit-learn framework provides consistent API and evaluation metrics (MAE, MSE)
-- **Model Training**: Train/test split approach for model validation
+  - XGBoost - gradient boosting algorithm optimized for speed and performance
+  - LSTM (Long Short-Term Memory) - deep learning recurrent neural network for time-series forecasting
+  - All models trained on time-based features and lagged values with iterative multi-step forecasting
+- **Model Training**: Train/test split approach (80/20) with temporal order preservation (shuffle=False)
+- **Feature Engineering**: Time-based features (hour, day, month) + lag features + rolling statistics
+- **Evaluation Metrics**: MAE (Mean Absolute Error) and RMSE (Root Mean Squared Error)
 
 ### Data Storage
 - **Database**: Supabase (PostgreSQL-based)
@@ -54,9 +65,14 @@ Preferred communication style: Simple, everyday language.
 - **plotly**: Interactive data visualization
 - **supabase**: Supabase client library for database connectivity
 - **scikit-learn**: Machine learning models and evaluation metrics
-  - RandomForestRegressor: Primary prediction model
-  - LinearRegression: Baseline comparison model
+  - RandomForestRegressor: Ensemble prediction model
+  - MinMaxScaler: Data normalization for LSTM
   - Model evaluation utilities (MAE, MSE, train_test_split)
+- **xgboost**: XGBoost gradient boosting library for high-performance predictions
+- **tensorflow/keras**: Deep learning framework for LSTM model implementation
+  - Sequential model architecture
+  - LSTM and Dense layers for time-series forecasting
+  - EarlyStopping callback for training optimization
 
 ### Environment Requirements
 - Python 3.x runtime
