@@ -266,6 +266,8 @@ async def predict_random_forest(hours: int = 12):
     try:
         result = generate_json_response('rf', 'Random Forest', hours)
         return JSONResponse(content=result)
+    except HTTPException as exc:
+        raise exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -275,6 +277,8 @@ async def predict_xgboost(hours: int = 12):
     try:
         result = generate_json_response('xgb', 'XGBoost', hours)
         return JSONResponse(content=result)
+    except HTTPException as exc:
+        raise exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -284,6 +288,8 @@ async def predict_lstm(hours: int = 12):
     try:
         result = generate_json_response('lstm', 'LSTM', hours)
         return JSONResponse(content=result)
+    except HTTPException as exc:
+        raise exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
