@@ -12,6 +12,7 @@ from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import warnings
 import os
+import json
 import xgboost as xgb
 from tensorflow import keras
 from tensorflow.keras.models import Sequential
@@ -457,6 +458,57 @@ def predict_all_models(models, df_features, hours_ahead=1):
     for model_type in ['rf', 'xgb', 'lstm']:
         predictions[model_type] = predict_future(models, df_features, hours_ahead, model_type)
     return predictions
+
+def convert_hourly_predictions_to_json(hourly_predictions):
+    """Convert hourly predictions to JSON format"""
+    json_output = {
+        "prediction_metadata": {
+            "generated_at": datetime.now().isoformat(),
+            "total_hours": len(hourly_predictions['rf']['timestamps']) if hourly_predictions and 'rf' in hourly_predictions else 0,
+            "models": ["Random Forest", "XGBoost", "LSTM"]
+        },
+        "predictions": []
+    }
+    
+    if not hourly_predictions or 'rf' not in hourly_predictions:
+        return json_output
+    
+    timestamps = hourly_predictions['rf']['timestamps']
+    
+    for i, timestamp in enumerate(timestamps):
+        hourly_data = {
+            "timestamp": timestamp.isoformat(),
+            "hour_offset": i + 1,
+            "models": {
+                "random_forest": {
+                    "temperature": float(hourly_predictions['rf']['predictions']['temperature'][i]),
+                    "humidity": float(hourly_predictions['rf']['predictions']['humidity'][i]),
+                    "co2": float(hourly_predictions['rf']['predictions']['co2'][i]),
+                    "co": float(hourly_predictions['rf']['predictions']['co'][i]),
+                    "pm25": float(hourly_predictions['rf']['predictions']['pm25'][i]),
+                    "pm10": float(hourly_predictions['rf']['predictions']['pm10'][i])
+                },
+                "xgboost": {
+                    "temperature": float(hourly_predictions['xgb']['predictions']['temperature'][i]),
+                    "humidity": float(hourly_predictions['xgb']['predictions']['humidity'][i]),
+                    "co2": float(hourly_predictions['xgb']['predictions']['co2'][i]),
+                    "co": float(hourly_predictions['xgb']['predictions']['co'][i]),
+                    "pm25": float(hourly_predictions['xgb']['predictions']['pm25'][i]),
+                    "pm10": float(hourly_predictions['xgb']['predictions']['pm10'][i])
+                },
+                "lstm": {
+                    "temperature": float(hourly_predictions['lstm']['predictions']['temperature'][i]),
+                    "humidity": float(hourly_predictions['lstm']['predictions']['humidity'][i]),
+                    "co2": float(hourly_predictions['lstm']['predictions']['co2'][i]),
+                    "co": float(hourly_predictions['lstm']['predictions']['co'][i]),
+                    "pm25": float(hourly_predictions['lstm']['predictions']['pm25'][i]),
+                    "pm10": float(hourly_predictions['lstm']['predictions']['pm10'][i])
+                }
+            }
+        }
+        json_output["predictions"].append(hourly_data)
+    
+    return json_output
 
 def create_hourly_prediction_plot(df, hourly_predictions, metric, metric_name, model_type='rf'):
     """Create a plot showing hourly predictions similar to the example image"""
@@ -947,6 +999,31 @@ def main():
                         
                         pred_df = pd.DataFrame(table_data)
                         st.dataframe(pred_df, use_container_width=True, hide_index=True)
+            
+            # JSON Export Section
+            st.subheader("📥 Export Predictions as JSON")
+            st.markdown("Download hourly predictions from all models in JSON format for integration with other systems.")
+            
+            # Convert to JSON
+            json_data = convert_hourly_predictions_to_json(hourly_predictions)
+            json_string = json.dumps(json_data, indent=2)
+            
+            # Display JSON preview
+            with st.expander("🔍 Preview JSON Output"):
+                st.json(json_data)
+            
+            # Download button
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                st.download_button(
+                    label="📥 Download JSON",
+                    data=json_string,
+                    file_name=f"hourly_predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    help="Download predictions in JSON format"
+                )
+            with col2:
+                st.info(f"JSON contains {json_data['prediction_metadata']['total_hours']} hours of predictions from all 3 models")
         else:
             st.error("Unable to generate hourly predictions")
     
