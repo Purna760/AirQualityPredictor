@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.121.0",
     "numpy>=2.3.4",
     "pandas>=2.3.3",
     "plotly>=6.3.1",
@@ -12,5 +13,6 @@ dependencies = [
     "streamlit>=1.51.0",
     "supabase>=2.23.2",
     "tensorflow>=2.20.0",
+    "uvicorn>=0.38.0",
     "xgboost>=3.1.1",
 ]
