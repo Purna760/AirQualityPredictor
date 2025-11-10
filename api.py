@@ -145,18 +145,70 @@ def train_model_for_api(df, model_type='rf'):
     
     return models, df_features
 
-def predict_hourly_api(models, df_features, hours_ahead=12, model_type='rf'):
-    """Predict future values for all metrics hour by hour"""
+def replay_historical_data_in_batches(df_features, batch_size=1000):
+    """
+    Replay all historical data in batches to build complete feature state.
+    This ensures the model uses all previous records, not just the last one.
+    
+    Args:
+        df_features: DataFrame with all engineered features
+        batch_size: Number of samples to process in each batch
+    
+    Returns:
+        The final row state after processing all historical data
+    """
+    if df_features is None or len(df_features) == 0:
+        return None
+    
+    total_samples = len(df_features)
+    
+    # If dataset is smaller than batch size, just return the last row
+    if total_samples <= batch_size:
+        return df_features.iloc[-1].copy()
+    
+    # Start from the first batch
+    current_row = df_features.iloc[0].copy()
+    
+    # Process data in batches
+    for batch_start in range(0, total_samples, batch_size):
+        batch_end = min(batch_start + batch_size, total_samples)
+        batch = df_features.iloc[batch_start:batch_end]
+        
+        # Update current_row to the last row of this batch
+        # This ensures lag features and rolling stats reflect all processed data
+        current_row = batch.iloc[-1].copy()
+    
+    return current_row
+
+def predict_hourly_api(models, df_features, hours_ahead=12, model_type='rf', batch_size=1000):
+    """
+    Predict future values for all metrics hour by hour.
+    Now uses ALL historical data with batch processing to prevent memory issues.
+    
+    Args:
+        models: Trained models dictionary
+        df_features: Full historical data with engineered features
+        hours_ahead: Number of hours to predict into the future
+        model_type: Type of model ('rf', 'xgb', or 'lstm')
+        batch_size: Number of samples to process in each batch (default: 1000)
+    """
     if models is None or df_features is None:
         raise HTTPException(status_code=500, detail="Models not available")
     
     metrics = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-    current_data = df_features.iloc[-1].copy()
+    
+    # Phase 1: Replay ALL historical data in batches to build complete feature state
+    current_data = replay_historical_data_in_batches(df_features, batch_size)
+    
+    if current_data is None:
+        raise HTTPException(status_code=500, detail="Failed to process historical data")
+    
     last_timestamp = current_data['created_at']
     
     hourly_predictions = {metric: [] for metric in metrics}
     hourly_timestamps = []
     
+    # Phase 2: Iteratively predict for each future hour
     for step in range(1, hours_ahead + 1):
         from datetime import timedelta
         step_timestamp = last_timestamp + timedelta(hours=step)
@@ -212,14 +264,14 @@ def predict_hourly_api(models, df_features, hours_ahead=12, model_type='rf'):
     
     return hourly_timestamps, hourly_predictions
 
-def generate_json_response(model_type, model_name, hours=12):
-    """Generate JSON response for a specific model"""
+def generate_json_response(model_type, model_name, hours=12, batch_size=1000):
+    """Generate JSON response for a specific model with batch processing"""
     df = fetch_data()
     if df is None:
         raise HTTPException(status_code=500, detail="Unable to fetch data")
     
     models, df_features = train_model_for_api(df, model_type)
-    timestamps, predictions = predict_hourly_api(models, df_features, hours, model_type)
+    timestamps, predictions = predict_hourly_api(models, df_features, hours, model_type, batch_size)
     
     json_output = {
         "prediction_metadata": {
@@ -261,10 +313,10 @@ async def root():
     }
 
 @app.get("/api/predictions/random-forest")
-async def predict_random_forest(hours: int = 12):
-    """Get hourly predictions from Random Forest model"""
+async def predict_random_forest(hours: int = 12, batch_size: int = 1000):
+    """Get hourly predictions from Random Forest model with configurable batch processing"""
     try:
-        result = generate_json_response('rf', 'Random Forest', hours)
+        result = generate_json_response('rf', 'Random Forest', hours, batch_size)
         return JSONResponse(content=result)
     except HTTPException as exc:
         raise exc
@@ -272,10 +324,10 @@ async def predict_random_forest(hours: int = 12):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/predictions/xgboost")
-async def predict_xgboost(hours: int = 12):
-    """Get hourly predictions from XGBoost model"""
+async def predict_xgboost(hours: int = 12, batch_size: int = 1000):
+    """Get hourly predictions from XGBoost model with configurable batch processing"""
     try:
-        result = generate_json_response('xgb', 'XGBoost', hours)
+        result = generate_json_response('xgb', 'XGBoost', hours, batch_size)
         return JSONResponse(content=result)
     except HTTPException as exc:
         raise exc
@@ -283,10 +335,10 @@ async def predict_xgboost(hours: int = 12):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/predictions/lstm")
-async def predict_lstm(hours: int = 12):
-    """Get hourly predictions from LSTM model"""
+async def predict_lstm(hours: int = 12, batch_size: int = 1000):
+    """Get hourly predictions from LSTM model with configurable batch processing"""
     try:
-        result = generate_json_response('lstm', 'LSTM', hours)
+        result = generate_json_response('lstm', 'LSTM', hours, batch_size)
         return JSONResponse(content=result)
     except HTTPException as exc:
         raise exc
