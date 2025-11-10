@@ -270,22 +270,36 @@ def train_models(df):
     return models, performance, df_features
 
 # Make predictions
-def predict_future(models, df_features, hours_ahead=1, model_type='rf'):
-    """Predict future values for all metrics using iterative multi-step forecasting for a specific model"""
+def predict_future(models, df_features, hours_ahead=1, model_type='rf', batch_size=1000):
+    """
+    Predict future values for all metrics using iterative multi-step forecasting.
+    Now uses ALL historical data with batch processing to prevent memory issues.
+    
+    Args:
+        models: Trained models dictionary
+        df_features: Full historical data with engineered features
+        hours_ahead: Number of hours to predict into the future
+        model_type: Type of model ('rf', 'xgb', or 'lstm')
+        batch_size: Number of samples to process in each batch (default: 1000)
+    """
     if models is None or df_features is None:
         return None
     
     metrics = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
     model_dict = models[model_type]
     
-    # Get the latest data point
-    current_data = df_features.iloc[-1].copy()
+    # Phase 1: Replay ALL historical data in batches to build complete feature state
+    current_data = replay_historical_data_in_batches(df_features, batch_size)
+    
+    if current_data is None:
+        return None
+    
     last_timestamp = current_data['created_at']
     
     # Initialize predictions dictionary
     step_predictions = {}
     
-    # Iteratively predict for each hour
+    # Phase 2: Iteratively predict for each future hour
     for step in range(1, hours_ahead + 1):
         # Calculate timestamp for this step
         step_timestamp = last_timestamp + timedelta(hours=step)
@@ -356,23 +370,72 @@ def predict_future(models, df_features, hours_ahead=1, model_type='rf'):
     
     return predictions
 
-def predict_hourly(models, df_features, hours_ahead=24, model_type='rf'):
-    """Predict future values for all metrics hour by hour, returning predictions for EACH hour"""
+def replay_historical_data_in_batches(df_features, batch_size=1000):
+    """
+    Replay all historical data in batches to build complete feature state.
+    This ensures the model uses all previous records, not just the last one.
+    
+    Args:
+        df_features: DataFrame with all engineered features
+        batch_size: Number of samples to process in each batch
+    
+    Returns:
+        The final row state after processing all historical data
+    """
+    if df_features is None or len(df_features) == 0:
+        return None
+    
+    total_samples = len(df_features)
+    
+    # If dataset is smaller than batch size, just return the last row
+    if total_samples <= batch_size:
+        return df_features.iloc[-1].copy()
+    
+    # Start from the first batch
+    current_row = df_features.iloc[0].copy()
+    
+    # Process data in batches
+    for batch_start in range(0, total_samples, batch_size):
+        batch_end = min(batch_start + batch_size, total_samples)
+        batch = df_features.iloc[batch_start:batch_end]
+        
+        # Update current_row to the last row of this batch
+        # This ensures lag features and rolling stats reflect all processed data
+        current_row = batch.iloc[-1].copy()
+    
+    return current_row
+
+def predict_hourly(models, df_features, hours_ahead=24, model_type='rf', batch_size=1000):
+    """
+    Predict future values for all metrics hour by hour, returning predictions for EACH hour.
+    Now uses ALL historical data with batch processing to prevent memory issues.
+    
+    Args:
+        models: Trained models dictionary
+        df_features: Full historical data with engineered features
+        hours_ahead: Number of hours to predict into the future
+        model_type: Type of model ('rf', 'xgb', or 'lstm')
+        batch_size: Number of samples to process in each batch (default: 1000)
+    """
     if models is None or df_features is None:
         return None
     
     metrics = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
     model_dict = models[model_type]
     
-    # Get the latest data point
-    current_data = df_features.iloc[-1].copy()
+    # Phase 1: Replay ALL historical data in batches to build complete feature state
+    current_data = replay_historical_data_in_batches(df_features, batch_size)
+    
+    if current_data is None:
+        return None
+    
     last_timestamp = current_data['created_at']
     
     # Initialize results storage for all hourly predictions
     hourly_predictions = {metric: [] for metric in metrics}
     hourly_timestamps = []
     
-    # Iteratively predict for each hour
+    # Phase 2: Iteratively predict for each future hour
     for step in range(1, hours_ahead + 1):
         # Calculate timestamp for this step
         step_timestamp = last_timestamp + timedelta(hours=step)
@@ -445,18 +508,18 @@ def predict_hourly(models, df_features, hours_ahead=24, model_type='rf'):
         'predictions': hourly_predictions
     }
 
-def predict_all_models_hourly(models, df_features, hours_ahead=24):
-    """Get hourly predictions from all three models"""
+def predict_all_models_hourly(models, df_features, hours_ahead=24, batch_size=1000):
+    """Get hourly predictions from all three models with batch processing"""
     predictions = {}
     for model_type in ['rf', 'xgb', 'lstm']:
-        predictions[model_type] = predict_hourly(models, df_features, hours_ahead, model_type)
+        predictions[model_type] = predict_hourly(models, df_features, hours_ahead, model_type, batch_size)
     return predictions
 
-def predict_all_models(models, df_features, hours_ahead=1):
-    """Get predictions from all three models"""
+def predict_all_models(models, df_features, hours_ahead=1, batch_size=1000):
+    """Get predictions from all three models with batch processing"""
     predictions = {}
     for model_type in ['rf', 'xgb', 'lstm']:
-        predictions[model_type] = predict_future(models, df_features, hours_ahead, model_type)
+        predictions[model_type] = predict_future(models, df_features, hours_ahead, model_type, batch_size)
     return predictions
 
 def convert_single_model_to_json(hourly_predictions, model_key, model_name):
@@ -676,6 +739,20 @@ def main():
         help="Select how many hours into the future to predict"
     )
     
+    # Batch processing settings
+    st.sidebar.subheader("Advanced Settings")
+    batch_size = st.sidebar.number_input(
+        "Batch Size for Data Processing",
+        min_value=100,
+        max_value=10000,
+        value=1000,
+        step=100,
+        help="Number of historical samples to process at once. Larger values are faster but use more memory. Use smaller values (e.g., 500-1000) for datasets with 7000+ records."
+    )
+    
+    total_records = len(df)
+    st.sidebar.info(f"📊 Total records: **{total_records}**\n\n🔢 Batches needed: **{(total_records + batch_size - 1) // batch_size}**")
+    
     # Train models
     with st.spinner("Training machine learning models..."):
         result = train_models(df)
@@ -758,7 +835,7 @@ def main():
     with tab2:
         st.header("🔮 Future Predictions - Model Comparison")
         
-        all_predictions = predict_all_models(models, df_features, hours_ahead=forecast_hours)
+        all_predictions = predict_all_models(models, df_features, hours_ahead=forecast_hours, batch_size=batch_size)
         
         if all_predictions:
             timestamp = all_predictions['rf']['timestamp']
@@ -910,7 +987,7 @@ def main():
         
         # Generate hourly predictions
         with st.spinner(f"Generating {hourly_forecast_hours}-hour predictions using {model_name}..."):
-            hourly_predictions = predict_all_models_hourly(models, df_features, hours_ahead=hourly_forecast_hours)
+            hourly_predictions = predict_all_models_hourly(models, df_features, hours_ahead=hourly_forecast_hours, batch_size=batch_size)
         
         if hourly_predictions:
             st.success(f"✅ Generated predictions for the next {hourly_forecast_hours} hours")
